@@ -1,4 +1,5 @@
 from dash import Dash, dcc, html
+from dash.exceptions import PreventUpdate
 from dash.dependencies import Output, Input
 import plotly.express as px
 from logger import *
@@ -7,25 +8,48 @@ from CT_calibration import *
 # ------------------- Dash App -------------------
 app = Dash(__name__)
 
+# app.layout = html.Div([
+#     html.H2("ESP32 Live Sensor Data"),
+#     dcc.Graph(id="live-graph"),
+#     html.Div(id="on-off-time", style={"marginTop": 20, "fontSize": 18}),
+#     dcc.Interval(
+#         id="interval-component",
+#         interval=30*1000,  # update every 10 seconds
+#         n_intervals=0
+#     )
+# ])
+
 app.layout = html.Div([
     html.H2("ESP32 Live Sensor Data"),
+    dcc.Checklist(
+        id="auto-update-toggle",
+        options=[{"label": " Auto Update", "value": "ON"}],
+        value=["ON"],  # default checked
+        inline=True,
+        style={"marginBottom": "10px", "fontSize": 16}
+    ),
     dcc.Graph(id="live-graph"),
     html.Div(id="on-off-time", style={"marginTop": 20, "fontSize": 18}),
     dcc.Interval(
         id="interval-component",
-        interval=30*1000,  # update every 10 seconds
+        interval=30*1000,
         n_intervals=0
     )
 ])
 
+# ------------------- Callbacks -------------------
 @app.callback(
     [Output("live-graph", "figure"),
      Output("on-off-time", "children")],
-    [Input("interval-component", "n_intervals")]
+    [Input("interval-component", "n_intervals"),
+     Input("auto-update-toggle", "value")]
 )
 
-
-def update_graph(n):
+def update_graph(n, auto_update):
+    if "ON" not in auto_update:
+        print("Auto-update is OFF. Pausing updates.")
+        raise PreventUpdate  # pause updates when unchecked
+# def update_graph(n):
     df = get_data()
 
     last_time = df["timestamp"].max()
@@ -91,14 +115,6 @@ def update_graph(n):
 
     # Get last update timestamp
     last_update = df["timestamp"].max().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Display ON/OFF time and last update
-    # on_off_text = (
-    #     f"✅Last update: {last_update}\n"
-    #     f"✅Total ON: {total_on_hours:.3f} hours\n"
-    #     f"✅Total OFF: {total_off_hours:.3f} hours\n"
-    #     f"✅Total available data: {total_data_hours:.3f} hours"
-    # )
 
     # Display text
     on_off_text = (
