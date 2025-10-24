@@ -1,23 +1,12 @@
 from dash import Dash, dcc, html
 from dash.exceptions import PreventUpdate
-from dash.dependencies import Output, Input
+from dash.dependencies import Output, Input, State
 import plotly.express as px
 from logger import *
 from CT_calibration import * 
 
 # ------------------- Dash App -------------------
 app = Dash(__name__)
-
-# app.layout = html.Div([
-#     html.H2("ESP32 Live Sensor Data"),
-#     dcc.Graph(id="live-graph"),
-#     html.Div(id="on-off-time", style={"marginTop": 20, "fontSize": 18}),
-#     dcc.Interval(
-#         id="interval-component",
-#         interval=30*1000,  # update every 10 seconds
-#         n_intervals=0
-#     )
-# ])
 
 app.layout = html.Div([
     html.H2("ESP32 Live Sensor Data"),
@@ -32,8 +21,24 @@ app.layout = html.Div([
     html.Div(id="on-off-time", style={"marginTop": 20, "fontSize": 18}),
     dcc.Interval(
         id="interval-component",
-        interval=30*1000,
+        interval=60*1000,
         n_intervals=0
+    ),
+    html.Div(
+        id="show-report",
+        children=[
+            html.H4("Show Report"),
+            html.Div([
+                html.Label("Days:"),
+                dcc.Input(id="report-days", type="number", min=0, value=0, step=1, style={"width": "80px", "marginRight": "16px"}),
+                html.Label("Hours:"),
+                dcc.Input(id="report-hours", type="number", min=0, value=0, step=1, style={"width": "80px", "marginRight": "16px"}),
+                html.Label("Minutes:"),
+                dcc.Input(id="report-minutes", type="number", min=0, value=0, step=1, style={"width": "80px", "marginRight": "16px"}),
+                html.Button("Generate Report", id="generate-report", n_clicks=0, style={"marginLeft": "8px"})
+            ], style={"display": "flex", "alignItems": "center", "gap": "8px"})
+        ],
+        style={"marginBottom": "12px", "padding": "6px", "border": "1px solid #ddd", "borderRadius": "6px"}
     )
 ])
 
@@ -41,20 +46,55 @@ app.layout = html.Div([
 @app.callback(
     [Output("live-graph", "figure"),
      Output("on-off-time", "children")],
-    [Input("interval-component", "n_intervals"),
-     Input("auto-update-toggle", "value")]
+    [
+        Input("interval-component", "n_intervals"),
+        Input("auto-update-toggle", "value"),
+        Input("generate-report", "n_clicks")
+    ],
+    [
+        State("report-days", "value"),
+        State("report-hours", "value"),
+        State("report-minutes", "value")
+    ]
 )
 
-def update_graph(n, auto_update):
-    if "ON" not in auto_update:
+def update_graph(n, auto_update, gen_n_clicks, report_days, report_hours, report_minutes):
+    # Decide whether this call is a manual "Generate Report" or a normal auto-update
+    is_manual_report = (gen_n_clicks is not None and gen_n_clicks > 0)
+
+    # If auto-update is OFF and this is NOT a manual report, pause updates
+    if "ON" not in (auto_update or []) and not is_manual_report:
         print("Auto-update is OFF. Pausing updates.")
-        raise PreventUpdate  # pause updates when unchecked
-# def update_graph(n):
+        raise PreventUpdate
+
+    # Determine d/h/m to use for cropping the dataframe
+    if is_manual_report:
+        # convert inputs to integers (fall back to 0 if None)
+        try:
+            d = int(report_days or 0)
+            h = int(report_hours or 0)
+            m = int(report_minutes or 0)
+        except Exception:
+            d, h, m = 0, 0, 0
+    else:
+        # normal periodic update: do not crop (use full available data)
+        d = h = m = None
+# ------------------------------------------------------------------------------
     df = get_data()
 
-    last_time = df["timestamp"].max()
-    start_time = last_time - pd.Timedelta(hours=24)
-    # df = df[df["timestamp"] >= start_time].reset_index(drop=True)
+    # If a manual report was requested, crop the dataframe to the last d/h/m window
+    if d is not None:
+        last_time = df["timestamp"].max()
+        delta = pd.Timedelta(days=d, hours=h, minutes=m)
+        crop_start = last_time - delta
+        # Keep only rows within the requested window
+        df = df[df["timestamp"] >= crop_start].reset_index(drop=True)
+        start_time_24_h = crop_start
+    else:
+        last_time = df["timestamp"].max()
+        start_time_24_h = last_time - pd.Timedelta(hours=24)
+        # df = df[df["timestamp"] >= start_time_24_h].reset_index(drop=True)
+
     # Calculate time differences
     df["time_diff"] = df["timestamp"].diff().dt.total_seconds().fillna(0)
 
@@ -91,7 +131,7 @@ def update_graph(n, auto_update):
     total_kwh = df["energy_Wh_ON"].sum() / 1000
     
     # Energy in last 24 hours (today usage)
-    today_kwh = df.loc[df["timestamp"] >= start_time, "energy_Wh_ON"].sum() / 1000
+    today_kwh = df.loc[df["timestamp"] >= start_time_24_h, "energy_Wh_ON"].sum() / 1000
     
     # Daily average usage (based on available data)
     num_days = total_data_hours / 24
@@ -110,7 +150,7 @@ def update_graph(n, auto_update):
         xaxis_title="Timestamp",
         yaxis_title="Sensor Value",
         legend_title="Fridge Status",
-        xaxis=dict(range=[start_time, last_time+pd.Timedelta(hours=1.5)])  # horizontal zoom on last 24 hours
+        xaxis=dict(range=[start_time_24_h, last_time+pd.Timedelta(hours=1.5)])  # horizontal zoom on last 24 hours
     )
 
     # Get last update timestamp
